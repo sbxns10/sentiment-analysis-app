@@ -1,10 +1,15 @@
 import streamlit as st
 import pickle
 import re
+import pandas as pd
+import json
 
 # -------------------- LOAD MODEL --------------------
 model = pickle.load(open('model.pkl', 'rb'))
 vectorizer = pickle.load(open('vectorizer.pkl', 'rb'))
+
+# -------------------- PAGE CONFIG --------------------
+st.set_page_config(page_title="AI Sentiment Analyzer", layout="wide")
 
 # -------------------- TEXT CLEANING --------------------
 def clean_text(text):
@@ -12,33 +17,18 @@ def clean_text(text):
     text = re.sub(r'[^a-z\s]', '', text)
     return text
 
-# -------------------- PAGE CONFIG --------------------
-st.set_page_config(page_title="AI Sentiment Analyzer", layout="centered")
-
-# -------------------- CUSTOM STYLE --------------------
-st.markdown("""
-    <style>
-    .main {
-        background-color: #0e1117;
-    }
-    .title {
-        text-align: center;
-        font-size: 40px;
-        font-weight: bold;
-        color: #4CAF50;
-    }
-    .subtitle {
-        text-align: center;
-        font-size: 18px;
-        color: #AAAAAA;
-        margin-bottom: 30px;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# -------------------- SIDEBAR --------------------
+st.sidebar.title("⚙️ Settings")
+show_chart = st.sidebar.checkbox("Show Confidence Chart", True)
+show_history = st.sidebar.checkbox("Show History", True)
 
 # -------------------- HEADER --------------------
-st.markdown('<div class="title">💬 AI Aspect-Based Sentiment Analyzer</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Analyze sentiment for food, service, price, ambience</div>', unsafe_allow_html=True)
+st.title("💬 AI Aspect-Based Sentiment Analyzer")
+st.markdown("### 🚀 Analyze sentiment for food, service, price, ambience")
+
+# -------------------- SESSION HISTORY --------------------
+if 'history' not in st.session_state:
+    st.session_state.history = []
 
 # -------------------- INPUT --------------------
 user_input = st.text_area("✍️ Enter your sentence:", height=120)
@@ -51,7 +41,7 @@ aspect_keywords = {
     'ambience': ['ambience', 'atmosphere', 'environment', 'place', 'vibe']
 }
 
-# -------------------- PREDICTION FUNCTION --------------------
+# -------------------- PREDICTION --------------------
 def predict_aspect_sentiment(text):
     text = clean_text(text)
     results = {}
@@ -65,6 +55,7 @@ def predict_aspect_sentiment(text):
             words = text.split()
             context = text
 
+            # -------- Extract context window --------
             for word in keywords:
                 if word in words:
                     idx = words.index(word)
@@ -73,23 +64,36 @@ def predict_aspect_sentiment(text):
                     context = " ".join(words[start:end])
                     break
 
-            # ---------------- RULE-BASED CORRECTION ----------------
+            # -------- ALWAYS use model --------
+            input_text = context + " " + aspect
+            vec = vectorizer.transform([input_text])
+
+            model_sentiment = model.predict(vec)[0]
+            model_conf = max(model.predict_proba(vec)[0]) * 100
+
+            # -------- Hybrid correction --------
             if any(w in context for w in negative_words):
                 sentiment = 'negative'
-                confidence = 85.0
+                confidence = max(model_conf, 80)  # ensure strong confidence
             elif any(w in context for w in positive_words):
                 sentiment = 'positive'
-                confidence = 85.0
+                confidence = max(model_conf, 80)
             else:
-                input_text = context + " " + aspect
-                vec = vectorizer.transform([input_text])
-
-                sentiment = model.predict(vec)[0]
-                confidence = max(model.predict_proba(vec)[0]) * 100
+                sentiment = model_sentiment
+                confidence = model_conf
 
             results[aspect] = (sentiment, round(confidence, 2))
 
-    # ---------------- FALLBACK (IMPORTANT) ----------------
+    # -------- FALLBACK --------
+    if not results:
+        vec = vectorizer.transform([text])
+        sentiment = model.predict(vec)[0]
+        confidence = max(model.predict_proba(vec)[0]) * 100
+        results['overall'] = (sentiment, round(confidence, 2))
+
+    return results
+
+    # Fallback
     if not results:
         vec = vectorizer.transform([text])
         sentiment = model.predict(vec)[0]
@@ -100,30 +104,66 @@ def predict_aspect_sentiment(text):
 
 # -------------------- BUTTON --------------------
 if st.button("🚀 Analyze Sentiment"):
+
     if user_input.strip() != "":
         results = predict_aspect_sentiment(user_input)
 
-        st.markdown("### 📊 Analysis Results")
+        # Save history
+        st.session_state.history.append((user_input, results))
 
-        for aspect, (sentiment, confidence) in results.items():
+        col1, col2 = st.columns([2, 1])
 
-            col1, col2 = st.columns([2, 1])
+        # -------------------- LEFT PANEL --------------------
+        with col1:
+            st.markdown("## 📊 Results")
 
-            with col1:
-                st.markdown(f"**🔹 {aspect.upper()}**")
+            for aspect, (sentiment, confidence) in results.items():
 
-            with col2:
-                st.markdown(f"**{confidence}%**")
+                st.markdown(f"### 🔹 {aspect.upper()}")
 
-            if sentiment == "positive":
-                st.success("😊 Positive")
-            elif sentiment == "negative":
-                st.error("😠 Negative")
-            else:
-                st.info("😐 Neutral")
+                if sentiment == "positive":
+                    st.success(f"😊 Positive ({confidence}%)")
+                elif sentiment == "negative":
+                    st.error(f"😠 Negative ({confidence}%)")
+                else:
+                    st.info(f"😐 Neutral ({confidence}%)")
 
-            st.progress(int(confidence))
-            st.markdown("---")
+                st.progress(int(confidence))
+                st.markdown("---")
+
+        # -------------------- RIGHT PANEL --------------------
+        with col2:
+            st.markdown("## 🧠 Summary")
+
+            summary = []
+            for aspect, (sentiment, _) in results.items():
+                emoji = "😊" if sentiment == "positive" else "😠" if sentiment == "negative" else "😐"
+                summary.append(f"{aspect}: {emoji}")
+
+            st.write(", ".join(summary))
+
+            # -------------------- CHART --------------------
+            if show_chart:
+                data = []
+                for aspect, (_, confidence) in results.items():
+                    data.append([aspect, confidence])
+
+                df = pd.DataFrame(data, columns=['Aspect', 'Confidence'])
+                st.bar_chart(df.set_index('Aspect'))
+
+            # -------------------- DOWNLOAD --------------------
+            st.download_button(
+                label="📥 Download Results",
+                data=json.dumps(results),
+                file_name="results.json"
+            )
+
+        # -------------------- HISTORY --------------------
+        if show_history:
+            st.markdown("## 🕘 Recent Inputs")
+
+            for text, _ in reversed(st.session_state.history[-3:]):
+                st.write(f"👉 {text}")
 
     else:
         st.warning("⚠️ Please enter some text.")
