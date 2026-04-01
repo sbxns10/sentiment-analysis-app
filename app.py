@@ -1,9 +1,16 @@
 import streamlit as st
 import pickle
+import re
 
 # -------------------- LOAD MODEL --------------------
 model = pickle.load(open('model.pkl', 'rb'))
 vectorizer = pickle.load(open('vectorizer.pkl', 'rb'))
+
+# -------------------- TEXT CLEANING --------------------
+def clean_text(text):
+    text = text.lower()
+    text = re.sub(r'[^a-z\s]', '', text)
+    return text
 
 # -------------------- PAGE CONFIG --------------------
 st.set_page_config(page_title="AI Sentiment Analyzer", layout="centered")
@@ -36,31 +43,41 @@ st.markdown('<div class="subtitle">Analyze sentiment for food, service, price, a
 # -------------------- INPUT --------------------
 user_input = st.text_area("✍️ Enter your sentence:", height=120)
 
+# -------------------- ASPECT KEYWORDS --------------------
+aspect_keywords = {
+    'food': ['food', 'pizza', 'burger', 'meal', 'dish', 'taste', 'menu'],
+    'service': ['service', 'staff', 'waiter', 'manager', 'support'],
+    'price': ['price', 'cost', 'expensive', 'cheap', 'value', 'money'],
+    'ambience': ['ambience', 'atmosphere', 'environment', 'place', 'vibe']
+}
+
 # -------------------- PREDICTION FUNCTION --------------------
 def predict_aspect_sentiment(text):
-    aspects = ['food', 'service', 'price', 'ambience']
+    text = clean_text(text)
     results = {}
 
-    negative_words = ['slow', 'bad', 'poor', 'terrible', 'worst', 'delay']
-    positive_words = ['good', 'great', 'amazing', 'excellent', 'nice']
+    negative_words = ['slow', 'bad', 'poor', 'terrible', 'worst', 'delay', 'hate']
+    positive_words = ['good', 'great', 'amazing', 'excellent', 'nice', 'love']
 
-    for aspect in aspects:
-        if aspect in text.lower():
-            
-            words = text.lower().split()
-            if aspect in words:
-                idx = words.index(aspect)
-                start = max(0, idx - 3)
-                end = min(len(words), idx + 4)
-                context = " ".join(words[start:end])
-            else:
-                context = text
+    for aspect, keywords in aspect_keywords.items():
+        if any(word in text for word in keywords):
 
-            # Rule-based correction
-            if any(word in context for word in negative_words):
+            words = text.split()
+            context = text
+
+            for word in keywords:
+                if word in words:
+                    idx = words.index(word)
+                    start = max(0, idx - 3)
+                    end = min(len(words), idx + 4)
+                    context = " ".join(words[start:end])
+                    break
+
+            # ---------------- RULE-BASED CORRECTION ----------------
+            if any(w in context for w in negative_words):
                 sentiment = 'negative'
                 confidence = 85.0
-            elif any(word in context for word in positive_words):
+            elif any(w in context for w in positive_words):
                 sentiment = 'positive'
                 confidence = 85.0
             else:
@@ -72,6 +89,13 @@ def predict_aspect_sentiment(text):
 
             results[aspect] = (sentiment, round(confidence, 2))
 
+    # ---------------- FALLBACK (IMPORTANT) ----------------
+    if not results:
+        vec = vectorizer.transform([text])
+        sentiment = model.predict(vec)[0]
+        confidence = max(model.predict_proba(vec)[0]) * 100
+        results['overall'] = (sentiment, round(confidence, 2))
+
     return results
 
 # -------------------- BUTTON --------------------
@@ -81,29 +105,25 @@ if st.button("🚀 Analyze Sentiment"):
 
         st.markdown("### 📊 Analysis Results")
 
-        if results:
-            for aspect, (sentiment, confidence) in results.items():
-                
-                col1, col2 = st.columns([2, 1])
+        for aspect, (sentiment, confidence) in results.items():
 
-                with col1:
-                    st.markdown(f"**🔹 {aspect.upper()}**")
+            col1, col2 = st.columns([2, 1])
 
-                with col2:
-                    st.markdown(f"**{confidence}%**")
+            with col1:
+                st.markdown(f"**🔹 {aspect.upper()}**")
 
-                if sentiment == "positive":
-                    st.success(f"😊 Positive")
-                elif sentiment == "negative":
-                    st.error(f"😠 Negative")
-                else:
-                    st.info(f"😐 Neutral")
+            with col2:
+                st.markdown(f"**{confidence}%**")
 
-                st.progress(int(confidence))
+            if sentiment == "positive":
+                st.success("😊 Positive")
+            elif sentiment == "negative":
+                st.error("😠 Negative")
+            else:
+                st.info("😐 Neutral")
 
-                st.markdown("---")
+            st.progress(int(confidence))
+            st.markdown("---")
 
-        else:
-            st.warning("⚠️ No known aspects found in the sentence.")
     else:
         st.warning("⚠️ Please enter some text.")
